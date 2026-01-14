@@ -1,0 +1,267 @@
+---
+# Source: nginx-info/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-nginx-info-config
+  namespace: kairu97
+  labels:
+    helm.sh/chart: nginx-info-0.1.0
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        server_name _;
+        charset utf-8;
+        
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+            add_header Content-Type "text/html; charset=utf-8";
+        }
+        
+        location /info {
+            add_header Content-Type application/json;
+            return 200 '{"server_ip":"$server_addr","client_ip":"$remote_addr","hostname":"$hostname","aws_region":"$aws_region"}';
+        }
+        
+        location /aws-logo.png {
+            alias /usr/share/nginx/html/aws-logo.png;
+        }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Server Info</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
+            .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .info { background: #e8f4fd; padding: 20px; border-radius: 5px; margin: 20px 0; }
+            .region-banner { background: linear-gradient(45deg, #ff6b6b, #4ecdc4); color: white; padding: 20px; border-radius: 10px; text-align: center; margin: 20px 0; font-size: 24px; font-weight: bold; }
+            .region-primary { background: linear-gradient(45deg, #2ecc71, #27ae60); }
+            .region-dr { background: linear-gradient(45deg, #e74c3c, #c0392b); }
+            img { max-width: 300px; border-radius: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 Nginx Info Server</h1>
+            
+            <div id="region-banner" class="region-banner">
+                🌏 SERVING FROM: <span id="aws-region">UNKNOWN REGION</span>
+            </div>
+            
+            <div class="info">
+                <h3>Server Information:</h3>
+                <p><strong>Hostname:</strong> <span id="hostname"></span></p>
+                <p><strong>Server IP:</strong> <span id="server-ip"></span></p>
+                <p><strong>Client IP:</strong> <span id="client-ip"></span></p>
+                <p><strong>AWS Region:</strong> <span id="region-detail"></span></p>
+            </div>
+            <div style="text-align: center; margin: 20px 0;">
+                <span style="font-size: 48px;">☁️</span>
+                <span style="font-size: 48px;">🚀</span>
+            </div>
+            <p><em>Deployed on Amazon EKS</em></p>
+        </div>
+        
+        <script>
+            document.getElementById('hostname').textContent = window.location.hostname;
+            fetch('/info')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('server-ip').textContent = data.server_ip;
+                    document.getElementById('client-ip').textContent = data.client_ip;
+                    
+                    // Display region information
+                    const region = data.aws_region || 'UNKNOWN';
+                    document.getElementById('aws-region').textContent = region;
+                    document.getElementById('region-detail').textContent = region;
+                    
+                    // Style the banner based on region
+                    const banner = document.getElementById('region-banner');
+                    if (region === 'ap-southeast-1') {
+                        banner.className = 'region-banner region-primary';
+                        banner.innerHTML = '🟢 PRIMARY REGION: ' + region + ' (Singapore)';
+                    } else if (region === 'ap-southeast-2') {
+                        banner.className = 'region-banner region-dr';
+                        banner.innerHTML = '🔴 DR REGION: ' + region + ' (Sydney)';
+                    } else {
+                        banner.innerHTML = '🌏 SERVING FROM: ' + region;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching server info:', error);
+                    document.getElementById('aws-region').textContent = 'ERROR LOADING REGION';
+                });
+        </script>
+    </body>
+    </html>
+---
+# Source: nginx-info/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-info
+  namespace: kairu97
+  labels:
+    helm.sh/chart: nginx-info-0.1.0
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: release-name
+---
+# Source: nginx-info/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-nginx-info
+  namespace: kairu97
+  labels:
+    helm.sh/chart: nginx-info-0.1.0
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-info
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        rollme: "vWKfk"
+      labels:
+        app.kubernetes.io/name: nginx-info
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: nginx
+        image: "nginx:alpine"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        env:
+        - name: AWS_REGION
+          value: "ap-southeast-1"
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          # Create nginx config with region substitution
+          sed "s/\$aws_region/$AWS_REGION/g" /tmp/nginx-template/nginx.conf > /etc/nginx/conf.d/default.conf
+          # Start nginx
+          nginx -g 'daemon off;'
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 2
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /tmp/nginx-template/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: html-content
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+        # - name: aws-logo
+        #   mountPath: /usr/share/nginx/html/aws-logo.png
+        #   subPath: aws-logo.png
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: release-name-nginx-info-config
+      - name: html-content
+        configMap:
+          name: release-name-nginx-info-config
+      # - name: aws-logo
+      #   configMap:
+      #     name: aws-logo
+      #     optional: true
+---
+# Source: nginx-info/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-nginx-info
+  namespace: kairu97
+  labels:
+    helm.sh/chart: nginx-info-0.1.0
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:430515646008:certificate/1d690c27-b3a8-4f5f-9958-987e4810d66a
+    alb.ingress.kubernetes.io/group.name: kairu97-alb
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    external-dns.alpha.kubernetes.io/hostname: nginx.kairu97.link
+    reloader.stakater.com/auto: "true"
+spec:
+  ingressClassName: alb
+
+  rules:
+  - host: nginx.kairu97.link
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-info
+            port:
+              number: 80

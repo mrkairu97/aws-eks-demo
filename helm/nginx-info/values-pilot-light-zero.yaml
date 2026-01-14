@@ -1,0 +1,16 @@
+# True Pilot Light DR Configuration (0 replicas)
+replicaCount: 0
+
+pilotLight:
+  enabled: true
+  replicaCount: 0
+
+# AWS Region for DR
+awsRegion: "ap-southeast-2"
+
+# DR region certificate ARN
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-2:430515646008:certificate/0d1769f3-b062-4af2-af13-e74c860b3ef5
+    external-dns.alpha.kubernetes.io/hostname: nginx.kairu97.link
+  host: nginx.kairu97.link

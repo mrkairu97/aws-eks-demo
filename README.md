@@ -1,2 +1,2 @@
-# aws-eks-demo
-Demo for AWS EKS for Beginners
+# k8s-dr-demo
+AWS EKS DR Demo

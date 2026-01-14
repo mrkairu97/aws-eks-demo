@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nginx-info.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nginx-info.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+{{ .Files.Get "static/nginx.conf" | indent 4 }}
+  index.html: |
+{{ .Files.Get "static/index.html" | indent 4 }}

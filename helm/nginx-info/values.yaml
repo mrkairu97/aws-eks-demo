@@ -1,0 +1,48 @@
+replicaCount: 2
+
+# Pilot light DR configuration
+pilotLight:
+  enabled: false
+  replicaCount: 0
+
+namespace: kairu97
+
+# AWS Region for display purposes
+awsRegion: "ap-southeast-1"
+
+image:
+  repository: nginx
+  tag: alpine
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:337968139672:certificate/1daad2f0-ea62-424d-96d0-277577114c69
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:430515646008:certificate/1d690c27-b3a8-4f5f-9958-987e4810d66a
+    alb.ingress.kubernetes.io/group.name: kairu97-alb
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    external-dns.alpha.kubernetes.io/hostname: nginx.kairu97.link
+    reloader.stakater.com/auto: "true"
+  host: nginx.kairu97.link
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

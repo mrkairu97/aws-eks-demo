@@ -1,0 +1,336 @@
+name: Deploy Nginx Info App
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'ap-southeast-1'
+        type: choice
+        options:
+        - ap-southeast-1
+        - ap-southeast-2
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+        - deploy-primary
+        - setup-dr
+        - deploy-both
+        - failover-to-dr
+        - failback-to-primary
+        - cleanup
+
+env:
+  CLUSTER_NAME: demo-eks-cluster
+  HELM_RELEASE: nginx-info
+  NAMESPACE: kairu97
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        region: ${{ github.event.inputs.action == 'deploy-both' && fromJson('["ap-southeast-1", "ap-southeast-2"]') || github.event.inputs.action == 'failover-to-dr' && fromJson('["ap-southeast-1", "ap-southeast-2"]') || github.event.inputs.action == 'failback-to-primary' && fromJson('["ap-southeast-1", "ap-southeast-2"]') || github.event.inputs.action == 'setup-dr' && fromJson('["ap-southeast-2"]') || fromJson(format('["{0}"]', github.event.inputs.region)) }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ vars.ASSUMEROLE }}
+        aws-region: ${{ matrix.region }}
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: '1.5.0'
+
+    - name: Update kubeconfig
+      run: |
+        REGION="${{ matrix.region }}"
+        aws eks update-kubeconfig --region $REGION --name ${{ env.CLUSTER_NAME }}
+
+    - name: Activate Infrastructure DR
+      if: (github.event.inputs.action == 'failover-to-dr' && matrix.region == 'ap-southeast-2') || (github.event.inputs.action == 'failback-to-primary' && matrix.region == 'ap-southeast-1')
+      run: |
+        REGION="${{ matrix.region }}"
+        echo "🚨 Activating infrastructure DR for region: $REGION"
+        
+        # Initialize Terraform
+        terraform init
+        terraform workspace select $REGION || terraform workspace new $REGION
+        
+        # Activate DR infrastructure (scale nodes)
+        terraform apply -var-file=config/$REGION.tfvars -var="is_dr_cluster=false" -auto-approve
+        
+        # Scale up CoreDNS manually
+        echo "📡 Scaling up CoreDNS to 2 replicas"
+        kubectl scale deployment coredns --replicas=2 -n kube-system
+        
+        # Restart CoreDNS to ensure fresh network config on new nodes
+        echo "🔄 Restarting CoreDNS deployment"
+        kubectl rollout restart deployment/coredns -n kube-system
+        kubectl rollout status deployment/coredns -n kube-system --timeout=300s
+        
+        echo "✅ Infrastructure DR activated - nodes and CoreDNS scaling up"
+        
+    - name: Deactivate Infrastructure DR
+      if: (github.event.inputs.action == 'failover-to-dr' && matrix.region == 'ap-southeast-1') || (github.event.inputs.action == 'failback-to-primary' && matrix.region == 'ap-southeast-2')
+      run: |
+        REGION="${{ matrix.region }}"
+        echo "🔄 Deactivating infrastructure DR for region: $REGION"
+        
+        # Scale down CoreDNS first
+        echo "📡 Scaling down CoreDNS to 0 replicas"
+        kubectl scale deployment coredns --replicas=0 -n kube-system
+        
+        # Initialize Terraform
+        terraform init
+        terraform workspace select $REGION || terraform workspace new $REGION
+        
+        # Deactivate DR infrastructure (scale down nodes)
+        terraform apply -var-file=config/$REGION.tfvars -var="is_dr_cluster=true" -auto-approve
+        
+        echo "✅ Infrastructure DR deactivated - nodes and CoreDNS scaled down"
+
+    - name: Manage Resource Quotas
+      if: github.event.inputs.action == 'setup-dr' || github.event.inputs.action == 'deploy-both' || github.event.inputs.action == 'failover-to-dr' || github.event.inputs.action == 'failback-to-primary'
+      run: |
+        # Manage resource quotas for pilot light mode
+        REGION="${{ matrix.region }}"
+        
+        # DR region (ap-southeast-2) logic
+        if [ "$REGION" = "ap-southeast-2" ]; then
+          if [ "${{ github.event.inputs.action }}" = "setup-dr" ] || [ "${{ github.event.inputs.action }}" = "failback-to-primary" ]; then
+            echo "💰 Setting resource quota to 0 for pilot light mode (saves costs)"
+            kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: ResourceQuota
+        metadata:
+          name: pilot-light-quota
+          namespace: ${{ env.NAMESPACE }}
+        spec:
+          hard:
+            requests.cpu: "0"
+            requests.memory: "0"
+            limits.cpu: "0"
+            limits.memory: "0"
+            pods: "0"
+        EOF
+            echo "🔧 Scaling down deployment to 0 replicas for pilot light mode"
+            kubectl scale deployment ${{ env.HELM_RELEASE }}-${{ matrix.region }} --replicas=0 -n ${{ env.NAMESPACE }} || true
+          else
+            echo "🔥 Removing resource quota - DR region going ACTIVE!"
+            kubectl delete resourcequota pilot-light-quota -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          fi
+        fi
+        
+        # Primary region (ap-southeast-1) logic
+        if [ "$REGION" = "ap-southeast-1" ]; then
+          if [ "${{ github.event.inputs.action }}" = "failover-to-dr" ]; then
+            echo "💰 Setting resource quota to 0 for pilot light mode (primary region standby)"
+            kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: ResourceQuota
+        metadata:
+          name: pilot-light-quota
+          namespace: ${{ env.NAMESPACE }}
+        spec:
+          hard:
+            requests.cpu: "0"
+            requests.memory: "0"
+            limits.cpu: "0"
+            limits.memory: "0"
+            pods: "0"
+        EOF
+            echo "🔧 Scaling down deployment to 0 replicas for pilot light mode"
+            kubectl scale deployment ${{ env.HELM_RELEASE }}-${{ matrix.region }} --replicas=0 -n ${{ env.NAMESPACE }} || true
+          else
+            echo "🔥 Removing resource quota - Primary region going ACTIVE!"
+            kubectl delete resourcequota pilot-light-quota -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          fi
+        fi
+
+    - name: Check Load Balancer Controller
+      if: github.event.inputs.action != 'cleanup'
+      run: |
+        echo "🔍 Checking AWS Load Balancer Controller status..."
+        
+        # Check if LBC is running
+        if ! kubectl get deployment aws-load-balancer-controller -n kube-system 2>/dev/null; then
+          echo "⚠️ AWS Load Balancer Controller not found - ingress creation will be slow"
+          echo "Consider installing LBC for faster ALB provisioning"
+        else
+          # Wait for LBC to be ready (continue if it fails)
+          if kubectl wait --for=condition=available --timeout=120s deployment/aws-load-balancer-controller -n kube-system; then
+            echo "✅ AWS Load Balancer Controller is ready"
+          else
+            echo "⚠️ AWS Load Balancer Controller not ready - continuing anyway"
+            echo "Ingress creation may be slower without LBC"
+          fi
+        fi
+
+    - name: Check Helm Status
+      if: github.event.inputs.action != 'cleanup'
+      run: |
+        REGION="${{ matrix.region }}"
+        
+        # Check if helm release exists and its status
+        if helm status ${{ env.HELM_RELEASE }}-$REGION -n ${{ env.NAMESPACE }} 2>/dev/null; then
+          STATUS=$(helm status ${{ env.HELM_RELEASE }}-$REGION -n ${{ env.NAMESPACE }} -o json | jq -r '.info.status')
+          echo "Current Helm release status: $STATUS"
+          
+          # If stuck in pending state, rollback
+          if [ "$STATUS" = "pending-install" ] || [ "$STATUS" = "pending-upgrade" ]; then
+            echo "🔧 Helm release stuck in $STATUS, rolling back..."
+            helm rollback ${{ env.HELM_RELEASE }}-$REGION -n ${{ env.NAMESPACE }} || true
+            sleep 10
+          fi
+        else
+          echo "No existing Helm release found"
+        fi
+
+    - name: Deploy or Reinstall Application
+      if: github.event.inputs.action != 'cleanup'
+      run: |
+        REGION="${{ matrix.region }}"
+        
+        # For DR operations, uninstall first for clean deployment
+        if [ "${{ github.event.inputs.action }}" = "failover-to-dr" ] || [ "${{ github.event.inputs.action }}" = "failback-to-primary" ]; then
+          echo "🔄 DR Operation: Uninstalling existing application for clean deployment"
+          helm uninstall ${{ env.HELM_RELEASE }}-$REGION -n ${{ env.NAMESPACE }} || true
+          sleep 30
+        fi
+        
+        # Skip deployment for regions being put into pilot light mode
+        if [ "${{ github.event.inputs.action }}" = "failover-to-dr" ] && [ "${{ matrix.region }}" = "ap-southeast-1" ]; then
+          echo "🔧 FAILOVER: Putting primary region into pilot light mode (skipping deployment)"
+          exit 0
+        elif [ "${{ github.event.inputs.action }}" = "failback-to-primary" ] && [ "${{ matrix.region }}" = "ap-southeast-2" ]; then
+          echo "🔧 FAILBACK: Putting DR region back into pilot light mode (skipping deployment)"
+          exit 0
+        fi
+        
+        # Get Terraform outputs for non-DR operations
+        if [ "${{ github.event.inputs.action }}" != "failover-to-dr" ] && [ "${{ github.event.inputs.action }}" != "failback-to-primary" ]; then
+          terraform init
+          terraform workspace select $REGION || terraform workspace new $REGION
+          terraform refresh -var-file=config/$REGION.tfvars
+          SUBNETS=$(terraform output -json public_subnets | jq -r '.[]' | tr '\n' ',' | sed 's/,$//')
+        else
+          SUBNETS=""
+        fi
+        
+        # Determine values file
+        if [ "${{ github.event.inputs.action }}" = "deploy-both" ] && [ "${{ matrix.region }}" = "ap-southeast-2" ]; then
+          VALUES_FILE="./helm/nginx-info/values-pilot-light-zero.yaml"
+          echo "🔧 Deploy-both: Setting up DR region in pilot light mode (0 replicas)"
+        elif [ "${{ github.event.inputs.action }}" = "setup-dr" ]; then
+          VALUES_FILE="./helm/nginx-info/values-pilot-light-zero.yaml"
+          echo "🔧 Setting up DR region in pilot light mode (0 replicas)"
+        elif [ "${{ github.event.inputs.action }}" = "failover-to-dr" ]; then
+          VALUES_FILE="./helm/nginx-info/values-pilot-light.yaml"
+          echo "🚨 DISASTER RECOVERY: Activating DR region!"
+        elif [ "${{ github.event.inputs.action }}" = "failback-to-primary" ]; then
+          VALUES_FILE="./helm/nginx-info/values.yaml"
+          echo "✅ RECOVERY: Activating primary region"
+        else
+          VALUES_FILE="./helm/nginx-info/values.yaml"
+          echo "🚀 Deploying to primary region"
+        fi
+        
+        # Deploy with or without subnets
+        if [ -n "$SUBNETS" ]; then
+          echo "Deploying with subnets: $SUBNETS"
+          echo "ingress:" > /tmp/subnet-values.yaml
+          echo "  annotations:" >> /tmp/subnet-values.yaml
+          echo "    alb.ingress.kubernetes.io/subnets: \"$SUBNETS\"" >> /tmp/subnet-values.yaml
+          
+          helm upgrade --install ${{ env.HELM_RELEASE }}-$REGION ./helm/nginx-info \
+            --namespace ${{ env.NAMESPACE }} \
+            --create-namespace \
+            --values $VALUES_FILE \
+            --values /tmp/subnet-values.yaml \
+            --atomic \
+            --timeout 5m
+        else
+          helm upgrade --install ${{ env.HELM_RELEASE }}-$REGION ./helm/nginx-info \
+            --namespace ${{ env.NAMESPACE }} \
+            --create-namespace \
+            --values $VALUES_FILE \
+            --atomic \
+            --timeout 5m
+        fi
+
+    - name: Get ALB Hostname and Update DNS
+      if: (github.event.inputs.action == 'failover-to-dr' && matrix.region == 'ap-southeast-2') || (github.event.inputs.action == 'failback-to-primary' && matrix.region == 'ap-southeast-1')
+      run: |
+        echo "Waiting for ALB to be ready..."
+        
+        # Wait for ingress to have ALB hostname (up to 10 minutes)
+        for i in {1..60}; do
+          ALB_HOSTNAME=$(kubectl get ingress nginx-info-${{ matrix.region }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          if [ -n "$ALB_HOSTNAME" ]; then
+            echo "ALB hostname found: $ALB_HOSTNAME"
+            break
+          fi
+          echo "Waiting for ALB hostname... ($i/60) - ALB creation can take 3-5 minutes"
+          sleep 10
+        done
+        
+        if [ -n "$ALB_HOSTNAME" ]; then
+          echo "Updating DNS record nginx.kairu97.link to point to $ALB_HOSTNAME"
+          
+          # Get hosted zone ID
+          ZONE_ID=$(aws route53 list-hosted-zones --query 'HostedZones[?Name==`kairu97.link.`].Id' --output text | cut -d'/' -f3)
+          
+          # Create change batch
+          cat > /tmp/change-batch.json <<EOF
+        {
+          "Changes": [{
+            "Action": "UPSERT",
+            "ResourceRecordSet": {
+              "Name": "nginx.kairu97.link",
+              "Type": "CNAME",
+              "TTL": 60,
+              "ResourceRecords": [{
+                "Value": "$ALB_HOSTNAME"
+              }]
+            }
+          }]
+        }
+        EOF
+          
+          # Update DNS record
+          aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch file:///tmp/change-batch.json
+          echo "✅ DNS updated: nginx.kairu97.link → $ALB_HOSTNAME"
+        else
+          echo "❌ No ALB hostname found after 10 minutes, skipping DNS update"
+        fi
+
+    - name: Cleanup
+      if: github.event.inputs.action == 'cleanup'
+      run: |
+        REGION="${{ matrix.region }}"
+        echo "🧹 Cleaning up resources in $REGION"
+        helm uninstall ${{ env.HELM_RELEASE }}-$REGION --namespace ${{ env.NAMESPACE }} || true
+        kubectl delete resourcequota pilot-light-quota -n ${{ env.NAMESPACE }} --ignore-not-found=true

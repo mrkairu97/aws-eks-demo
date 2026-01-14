@@ -1,0 +1,61 @@
+name: DR Activation
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'DR Action'
+        required: true
+        type: choice
+        options:
+        - activate
+        - deactivate
+
+env:
+  TF_VERSION: '1.9.8'
+  AWS_REGION: 'ap-southeast-2'
+  ENVIRONMENT: 'ap-southeast-2'
+
+jobs:
+  dr-action:
+    name: ${{ github.event.inputs.action == 'activate' && 'Activate DR Cluster' || 'Deactivate DR Cluster' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ASSUMEROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-DR-${{ github.run_id }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Select Terraform Workspace
+        run: terraform workspace select ${{ env.ENVIRONMENT }} || terraform workspace new ${{ env.ENVIRONMENT }}
+
+      - name: DR Activation
+        if: github.event.inputs.action == 'activate'
+        run: |
+          echo "🚨 ACTIVATING DR CLUSTER 🚨"
+          terraform apply -var-file=config/ap-southeast-2.tfvars -var="is_dr_cluster=false" -auto-approve
+          echo "✅ DR cluster nodes scaling up (ETA: 3-5 minutes)"
+
+      - name: DR Deactivation
+        if: github.event.inputs.action == 'deactivate'
+        run: |
+          echo "🔄 DEACTIVATING DR CLUSTER"
+          terraform apply -var-file=config/ap-southeast-2.tfvars -var="is_dr_cluster=true" -auto-approve
+          echo "✅ DR cluster scaled down to 0 nodes"

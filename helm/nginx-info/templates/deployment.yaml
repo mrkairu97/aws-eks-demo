@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nginx-info.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nginx-info.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if .Values.pilotLight.enabled }}{{ .Values.pilotLight.replicaCount }}{{ else }}{{ .Values.replicaCount }}{{ end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "nginx-info.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        {{- include "nginx-info.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: nginx
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: 80
+        env:
+        - name: AWS_REGION
+          value: "{{ .Values.awsRegion | default "unknown" }}"
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          # Create nginx config with region substitution
+          sed "s/\$aws_region/$AWS_REGION/g" /tmp/nginx-template/nginx.conf > /etc/nginx/conf.d/default.conf
+          # Start nginx
+          nginx -g 'daemon off;'
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 2
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /tmp/nginx-template/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: html-content
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+        # - name: aws-logo
+        #   mountPath: /usr/share/nginx/html/aws-logo.png
+        #   subPath: aws-logo.png
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: {{ include "nginx-info.fullname" . }}-config
+      - name: html-content
+        configMap:
+          name: {{ include "nginx-info.fullname" . }}-config
+      # - name: aws-logo
+      #   configMap:
+      #     name: aws-logo
+      #     optional: true
