@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aws-nginx-info
+  namespace: kairu97
+  labels:
+    app.kubernetes.io/name: nginx-info
+    app.kubernetes.io/instance: aws
+    app.kubernetes.io/version: "1.0"
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-info
+            port:
+              number: 80
