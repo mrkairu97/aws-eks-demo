@@ -208,6 +208,14 @@ resource "aws_security_group" "node_group_sg" {
     security_groups = [aws_security_group.eks_cluster_sg.id]
   }
 
+  ingress {
+    description = "Allow from cluster managed SG"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -239,8 +247,6 @@ resource "aws_eks_node_group" "main" {
   update_config {
     max_unavailable = var.is_dr_cluster ? 2 : 1
   }
-
-
 
   depends_on = [
     aws_iam_role_policy_attachment.node_group_worker_node_policy,

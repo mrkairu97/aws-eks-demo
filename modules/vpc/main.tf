@@ -95,14 +95,11 @@ resource "aws_route_table" "private_route_table" {
     vpc_id = aws_vpc.demo_vpc.id
     route {
         cidr_block = "0.0.0.0/0"
-        gateway_id = aws_nat_gateway.nat_gateway.id
+        nat_gateway_id = aws_nat_gateway.nat_gateway.id
     }
     tags = {
         Name = "Private Route Table"
     }
-  lifecycle {
-    ignore_changes = [route]
-  }
 }
 
 resource "aws_route_table_association" "pub_1" {

@@ -16,8 +16,14 @@ terraform {
   }
 }
 
+# provider "aws" {
+#   region = var.aws_region
+# }
+
 provider "aws" {
-  region = var.aws_region
+  region     = "ap-southeast-1"
+  access_key = "<ACCESS_KEY>"
+  secret_key = "<SECRET_KEY"
 }
 
 provider "kubernetes" {
