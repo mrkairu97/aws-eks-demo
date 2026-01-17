@@ -1,6 +1,6 @@
 # AWS EKS DR Demo
 
-Demonstration of AWS EKS disaster recovery setup using Terraform and Kubernetes.
+A demonstration lab exercise for beginners learning Kubernetes
 
 ## Setup Commands
 
