@@ -1,4 +1,4 @@
-# AWS EKS DR Demo
+# AWS EKS Lab for Beginners
 
 A demonstration lab exercise for beginners learning Kubernetes
 
