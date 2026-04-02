@@ -1,0 +1,26 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "chatbot.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "chatbot.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: alb
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chatbot.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

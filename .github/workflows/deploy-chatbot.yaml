@@ -1,0 +1,105 @@
+name: Deploy Chatbot POC
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - cleanup
+
+env:
+  AWS_REGION: ap-southeast-1
+  CLUSTER_NAME: demo-eks-cluster
+  ECR_REPO: chatbot-poc
+  NAMESPACE: chatbot-poc
+  HELM_RELEASE: chatbot
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ASSUMEROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: inputs.action == 'deploy'
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        if: inputs.action == 'deploy'
+        run: |
+          ECR_URI=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}
+
+          docker build -t $ECR_URI:${{ env.IMAGE_TAG }} -t $ECR_URI:latest ./chatbot
+          docker push $ECR_URI:${{ env.IMAGE_TAG }}
+          docker push $ECR_URI:latest
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Deploy with Helm
+        if: inputs.action == 'deploy'
+        run: |
+          ECR_URI=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}
+
+          helm upgrade --install ${{ env.HELM_RELEASE }} ./helm/chatbot \
+            --namespace ${{ env.NAMESPACE }} \
+            --set image.repository=$ECR_URI \
+            --set image.tag=${{ env.IMAGE_TAG }} \
+            --atomic \
+            --timeout 5m
+
+          echo "--- Deployment Status ---"
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get ingress -n ${{ env.NAMESPACE }}
+
+      - name: Get ALB URL
+        if: inputs.action == 'deploy'
+        run: |
+          echo "Waiting for ALB..."
+          for i in {1..30}; do
+            ALB=$(kubectl get ingress -n ${{ env.NAMESPACE }} \
+              -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$ALB" ]; then
+              echo "========================================"
+              echo "Chatbot UI: http://$ALB"
+              echo "API endpoint: http://$ALB/chat"
+              echo "========================================"
+              break
+            fi
+            echo "Waiting for ALB hostname... ($i/30)"
+            sleep 10
+          done
+
+      - name: Cleanup
+        if: inputs.action == 'cleanup'
+        run: |
+          helm uninstall ${{ env.HELM_RELEASE }} --namespace ${{ env.NAMESPACE }} || true

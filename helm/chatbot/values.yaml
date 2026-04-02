@@ -1,0 +1,44 @@
+replicaCount: 2
+
+namespace: chatbot-poc
+
+awsRegion: "ap-southeast-1"
+bedrockModelId: "anthropic.claude-opus-4-6-20250528-v1:0"
+
+image:
+  repository: ""  # Set to your ECR URI, e.g. 123456789.dkr.ecr.ap-southeast-1.amazonaws.com/chatbot-poc
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: chatbot-sa
+  create: false  # Created by Terraform IRSA
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60

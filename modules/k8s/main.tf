@@ -266,6 +266,70 @@ resource "aws_iam_role_policy" "aws_load_balancer_controller_additional" {
 
 
 
+# ──────────────────────────────────────────────
+# Chatbot POC — Bedrock IRSA
+# ──────────────────────────────────────────────
+resource "aws_iam_role" "chatbot_bedrock" {
+  name = "chatbot-bedrock-role-${var.aws_region}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Effect = "Allow"
+        Principal = {
+          Federated = var.oidc_provider_arn
+        }
+        Condition = {
+          StringEquals = {
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:chatbot-poc:chatbot-sa"
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "chatbot_bedrock_invoke" {
+  name = "chatbot-bedrock-invoke"
+  role = aws_iam_role.chatbot_bedrock.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowBedrockInvoke"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "kubernetes_namespace" "chatbot_poc" {
+  metadata {
+    name = "chatbot-poc"
+  }
+}
+
+resource "kubernetes_service_account" "chatbot" {
+  metadata {
+    name      = "chatbot-sa"
+    namespace = kubernetes_namespace.chatbot_poc.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.chatbot_bedrock.arn
+    }
+  }
+}
+
 # AWS Load Balancer Controller Service Account
 resource "kubernetes_service_account" "aws_load_balancer_controller" {
   metadata {
